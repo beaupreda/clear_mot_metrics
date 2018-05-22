@@ -102,6 +102,7 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+.idea
 
 # folders
 Nicolas-trafficintelligence-9b601e9e9735
