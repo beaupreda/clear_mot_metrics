@@ -192,6 +192,11 @@ class Point:
     class to represent a point
     """
     def __init__(self, x, y):
+        """
+        constructor
+        :param x: x coordinate
+        :param y: y coordinate
+        """
         self.x = x
         self.y = y
 
@@ -212,7 +217,7 @@ class Rectangle:
         self.y_tl = y_tl
         self.x_br = x_br
         self.y_br = y_br
-        self.center_point = Point(round(self.width() / 2), round(self.height() / 2))
+        self.center_point = Point(round(x_tl + (self.width() / 2)), round(y_tl + (self.height() / 2)))
 
     def width(self):
         """
@@ -237,7 +242,7 @@ class Rectangle:
 
     def intersection_area(self, rect):
         """
-        computes the are of the intersection between 2 rectangles
+        computes the area of the intersection between 2 rectangles
         :param rect: other rectangle to do the computation
         :return: area
         """
@@ -250,9 +255,9 @@ class Rectangle:
 
     def centroids_distance(self, rect):
         """
-
-        :param rect:
-        :return:
+        computes the distance between the centers of 2 rectangles
+        :param rect: other rectangle to do the computation
+        :return: distance
         """
         dx = abs(self.center_point.x - rect.center_point.x)
         dy = abs(self.center_point.y - rect.center_point.y)
@@ -261,7 +266,7 @@ class Rectangle:
 
 class CustomBBox:
     """
-    class to represent a rectable with its id
+    class to represent a rectangle with its id
     """
     def __init__(self, index, rectangle):
         """
@@ -286,13 +291,13 @@ class MOTMetrics:
         self.annotations = annotations
         self.hypotheses = hypotheses
 
-    def distance_between_objects(self, cbbox_annot, cbbox_hypo, time, IoU):
+    def distance_between_objects(self, cbbox_annot, cbbox_hypo, time, ratio, IoU):
         """
-        computes IoU (intersection over union) between 2 CustomBBox at a given time t
+        computes IoU (intersection over union) or centroids distance between 2 CustomBBox at a given time t
         :param cbbox_annot: CustomBBox from the ground_truth
         :param cbbox_hypo: CustomBBox from hypotheses
         :param time: instant t
-        :return : IoU
+        :return : IoU/distance
         """
         annotations = self.annotations[time]
         hypotheses = self.hypotheses[time]
@@ -307,8 +312,11 @@ class MOTMetrics:
                 return intersection_area / union_area
             return 0.0
         else:
-            return new_annot.rectangle.centroids_distance(new_hypo.rectangle)
-
+            dist = new_annot.rectangle.centroids_distance(new_hypo.rectangle)
+            if dist < ratio:
+                return dist
+            else:
+                return dist + 1
 
     def object_exists(self, match, time, gt):
         """
@@ -379,14 +387,14 @@ class MOTMetrics:
             if IoU:
                 col = np.zeros(shape=(max_dimension, 1))
             else:
-                col = np.full(shape=(max_dimension, 1), fill_value=threshold * 2)
+                col = np.full(shape=(max_dimension, 1), fill_value=threshold * 100)
             new_mat = np.hstack((new_mat, col))
             nb_cols += 1
         while nb_rows < max_dimension:
             if IoU:
                 row = np.zeros(shape=(1, max_dimension))
             else:
-                row = np.full(shape=(1, max_dimension), fill_value=threshold * 2)
+                row = np.full(shape=(1, max_dimension), fill_value=threshold * 100)
             new_mat = np.vstack((new_mat, row))
             nb_rows += 1
 
@@ -424,7 +432,7 @@ class MOTMetrics:
             for match in matches:
                 # check if current match still exists
                 if self.object_exists(match, t, True) and self.object_exists(matches[match], t, False):
-                    dist = self.distance_between_objects(match, matches[match], t, IoU)
+                    dist = self.distance_between_objects(match, matches[match], t, threshold, IoU)
                     # we work with bounding boxes
                     if IoU:
                         if dist >= threshold:
@@ -459,7 +467,7 @@ class MOTMetrics:
                 for gtnm in gt_not_matched:
                     j = 0
                     for hyponm in hypo_not_matched:
-                        dist = self.distance_between_objects(gtnm, hyponm, t, IoU)
+                        dist = self.distance_between_objects(gtnm, hyponm, t, threshold, IoU)
                         scores[i, j] = dist
                         j += 1
                     i += 1
@@ -525,11 +533,19 @@ class MOTMetrics:
 
 def main():
     if len(sys.argv) != 5:
-        print('Not enough arguments (filename_gt, filename_hypotheses, method [bboverlap or centroid]), overlap_ratio')
+        print('Not enough arguments (filename_gt, filename_hypotheses, method [bboverlap or centroid]), distance')
         return
 
     file_annotations = sys.argv[1]
+    if not os.path.exists(file_annotations):
+        print('Annotation file does not exist')
+        return
+
     file_hypotheses = sys.argv[2]
+    if not os.path.exists(file_hypotheses):
+        print('Hypotheses file does not exist')
+        return
+
     method = None
     if sys.argv[3] == 'bboverlap':
         method = True
@@ -541,6 +557,14 @@ def main():
         return
 
     ratio = float(sys.argv[4])
+    if method:
+        if ratio < 0.0 or ratio > 1.0:
+            print('Distance for bboverlap must be between 0.0 and 1.0')
+            return
+    else:
+        if ratio < 0.0:
+            print('Distance for centroid must be positive (x > 0.0)')
+            return
 
     annotations_name, annotations_extension = os.path.splitext(file_annotations)
     hypotheses_name, hypotheses_extension = os.path.splitext(file_hypotheses)
@@ -561,8 +585,14 @@ def main():
     mot_metrics = MOTMetrics(data_annotations, data_hypotheses)
     motp, mota = mot_metrics.compute_metrics(data_annotations.min_frame, data_annotations.max_frame, ratio, method)
 
-    print('MOTP = %.4f' % motp)
-    print('MOTA = %.4f' % mota)
+    if motp is not None:
+        print('MOTP = %.4f' % motp)
+    else:
+        print('MOTP = None')
+    if mota is not None:
+        print('MOTA = %.4f' % mota)
+    else:
+        print('MOTA = None')
 
 
 if __name__ == "__main__":
