@@ -1,6 +1,7 @@
 import os
 import sys
 import sqlite3
+import math
 import numpy as np
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -186,6 +187,15 @@ class XMLPetsData(InputData):
         return self.tracks[index]
 
 
+class Point:
+    """
+    class to represent a point
+    """
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+
 class Rectangle:
     """
     class to represent a rectangle
@@ -202,6 +212,7 @@ class Rectangle:
         self.y_tl = y_tl
         self.x_br = x_br
         self.y_br = y_br
+        self.center_point = Point(round(self.width() / 2), round(self.height() / 2))
 
     def width(self):
         """
@@ -237,6 +248,16 @@ class Rectangle:
         else:
             return 0.0
 
+    def centroids_distance(self, rect):
+        """
+
+        :param rect:
+        :return:
+        """
+        dx = abs(self.center_point.x - rect.center_point.x)
+        dy = abs(self.center_point.y - rect.center_point.y)
+        return math.sqrt(math.pow(dx, 2) + math.pow(dy, 2))
+
 
 class CustomBBox:
     """
@@ -265,7 +286,7 @@ class MOTMetrics:
         self.annotations = annotations
         self.hypotheses = hypotheses
 
-    def intersection_over_union(self, cbbox_annot, cbbox_hypo, time):
+    def distance_between_objects(self, cbbox_annot, cbbox_hypo, time, IoU):
         """
         computes IoU (intersection over union) between 2 CustomBBox at a given time t
         :param cbbox_annot: CustomBBox from the ground_truth
@@ -279,11 +300,15 @@ class MOTMetrics:
         new_annot = MOTMetrics.find_correspondences(cbbox_annot, annotations)
         new_hypo = MOTMetrics.find_correspondences(cbbox_hypo, hypotheses)
 
-        intersection_area = new_annot.rectangle.intersection_area(new_hypo.rectangle)
-        union_area = new_annot.rectangle.area() + new_hypo.rectangle.area() - intersection_area
-        if intersection_area > 0.0:
-            return intersection_area / union_area
-        return 0.0
+        if IoU:
+            intersection_area = new_annot.rectangle.intersection_area(new_hypo.rectangle)
+            union_area = new_annot.rectangle.area() + new_hypo.rectangle.area() - intersection_area
+            if intersection_area > 0.0:
+                return intersection_area / union_area
+            return 0.0
+        else:
+            return new_annot.rectangle.centroids_distance(new_hypo.rectangle)
+
 
     def object_exists(self, match, time, gt):
         """
@@ -339,7 +364,7 @@ class MOTMetrics:
         return None
 
     @staticmethod
-    def make_matrix_square(matrix):
+    def make_matrix_square(matrix, IoU, threshold):
         """
         makes a square matrix from a rectangular one, if necessary
         :param matrix: a numpy matrix
@@ -351,17 +376,23 @@ class MOTMetrics:
 
         max_dimension = max(nb_rows, nb_cols)
         while nb_cols < max_dimension:
-            col = np.zeros(shape=(max_dimension, 1))
+            if IoU:
+                col = np.zeros(shape=(max_dimension, 1))
+            else:
+                col = np.full(shape=(max_dimension, 1), fill_value=threshold * 2)
             new_mat = np.hstack((new_mat, col))
             nb_cols += 1
         while nb_rows < max_dimension:
-            row = np.zeros(shape=(1, max_dimension))
+            if IoU:
+                row = np.zeros(shape=(1, max_dimension))
+            else:
+                row = np.full(shape=(1, max_dimension), fill_value=threshold * 2)
             new_mat = np.vstack((new_mat, row))
             nb_rows += 1
 
         return new_mat
 
-    def compute_metrics(self, first_instant, last_instant, overlap_ratio):
+    def compute_metrics(self, first_instant, last_instant, threshold, IoU):
         """
         Reference:
         Keni, Bernardin, and Stiefelhagen Rainer. "Evaluating multiple object tracking performance:
@@ -393,11 +424,19 @@ class MOTMetrics:
             for match in matches:
                 # check if current match still exists
                 if self.object_exists(match, t, True) and self.object_exists(matches[match], t, False):
-                    dist = self.intersection_over_union(match, matches[match], t)
-                    if dist >= overlap_ratio:
-                        distance += dist
+                    dist = self.distance_between_objects(match, matches[match], t, IoU)
+                    # we work with bounding boxes
+                    if IoU:
+                        if dist >= threshold:
+                            distance += dist
+                        else:
+                            not_valid_matches.append(match)
+                    # we work with distance between centroids
                     else:
-                        not_valid_matches.append(match)
+                        if dist < threshold:
+                            distance += dist
+                        else:
+                            not_valid_matches.append(match)
                 else:
                     not_valid_matches.append(match)
 
@@ -420,24 +459,32 @@ class MOTMetrics:
                 for gtnm in gt_not_matched:
                     j = 0
                     for hyponm in hypo_not_matched:
-                        dist = self.intersection_over_union(gtnm, hyponm, t)
+                        dist = self.distance_between_objects(gtnm, hyponm, t, IoU)
                         scores[i, j] = dist
                         j += 1
                     i += 1
 
             # make sure to have square matrix for hungarian algo
-            costs = MOTMetrics.make_matrix_square(scores)
+            costs = MOTMetrics.make_matrix_square(scores, IoU, threshold)
             # hungarian algo minimizes assignments => take the complement of each value (1 - val)
-            costs = np.ones(costs.shape) - costs
+            if IoU:
+                costs = np.ones(costs.shape) - costs
             # add new matches to the current ones
             if costs is not None and costs.size > 0:
                 associations = munk.compute(costs.copy())
                 for r, c in associations:
-                    if 1.0 - costs[r][c] >= overlap_ratio:
-                        # ignore the assignments caused by the padding
-                        if r < len(gt_not_matched) and c < len(hypo_not_matched):
-                            matches[gt_not_matched[r]] = hypo_not_matched[c]
-                            distance += scores[r][c]
+                    if IoU:
+                        if 1.0 - costs[r][c] >= threshold:
+                            # ignore the assignments caused by the padding
+                            if r < len(gt_not_matched) and c < len(hypo_not_matched):
+                                matches[gt_not_matched[r]] = hypo_not_matched[c]
+                                distance += scores[r][c]
+                    else:
+                        if costs[r][c] < threshold:
+                            # ignore the assignments caused by the paddig
+                            if r < len(gt_not_matched) and c < len(hypo_not_matched):
+                                matches[gt_not_matched[r]] = hypo_not_matched[c]
+                                distance += scores[r][c]
 
             # counters update
             correct_tracks += len(matches)
@@ -477,13 +524,23 @@ class MOTMetrics:
 
 
 def main():
-    if len(sys.argv) != 4:
-        print('Not enough arguments (filename_gt, filename_hypotheses, overlap_ratio)')
+    if len(sys.argv) != 5:
+        print('Not enough arguments (filename_gt, filename_hypotheses, method [bboverlap or centroid]), overlap_ratio')
         return
 
     file_annotations = sys.argv[1]
     file_hypotheses = sys.argv[2]
-    ratio = float(sys.argv[3])
+    method = None
+    if sys.argv[3] == 'bboverlap':
+        method = True
+    elif sys.argv[3] == 'centroid':
+        method = False
+
+    if method is None:
+        print('Third argument must either be bboverlap or centroid')
+        return
+
+    ratio = float(sys.argv[4])
 
     annotations_name, annotations_extension = os.path.splitext(file_annotations)
     hypotheses_name, hypotheses_extension = os.path.splitext(file_hypotheses)
@@ -502,7 +559,7 @@ def main():
     data_hypotheses.convert_annotations()
 
     mot_metrics = MOTMetrics(data_annotations, data_hypotheses)
-    motp, mota = mot_metrics.compute_metrics(data_annotations.min_frame, data_annotations.max_frame, ratio)
+    motp, mota = mot_metrics.compute_metrics(data_annotations.min_frame, data_annotations.max_frame, ratio, method)
 
     print('MOTP = %.4f' % motp)
     print('MOTA = %.4f' % mota)
