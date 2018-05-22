@@ -21,21 +21,21 @@ XML file as the example below:
 	...
 </Video>
 ```
-
 Only some attributes are necessary for each tag:
+
 #### Video
-*end_frame
-*start_frame
+* end_frame
+* start_frame
 
 #### Trajectory
-*obj_id
+* obj_id
 
 #### Frame
-*frame_no
-*width
-*height
-*x
-*y
+* frame_no
+* width
+* height
+* x
+* y
 
 ### SQLITE (Polytrack)
 SQLite table named *bounding_boxes* organized as follow:
