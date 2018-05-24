@@ -291,72 +291,27 @@ class MOTMetrics:
         self.annotations = annotations
         self.hypotheses = hypotheses
 
-    def distance_between_objects(self, cbbox_annot, cbbox_hypo, time, ratio, IoU):
+    def distance_between_objects(self, cbbox_annot, cbbox_hypo, ratio, IoU):
         """
         computes IoU (intersection over union) or centroids distance between 2 CustomBBox at a given time t
         :param cbbox_annot: CustomBBox from the ground_truth
         :param cbbox_hypo: CustomBBox from hypotheses
-        :param time: instant t
+        :param ratio: threshold metric
+        :param IoU: True if evaluation is done with IoU, False if distance between centroid
         :return : IoU/distance
         """
-        annotations = self.annotations[time]
-        hypotheses = self.hypotheses[time]
-
-        new_annot = MOTMetrics.find_correspondences(cbbox_annot, annotations)
-        new_hypo = MOTMetrics.find_correspondences(cbbox_hypo, hypotheses)
-
         if IoU:
-            intersection_area = new_annot.rectangle.intersection_area(new_hypo.rectangle)
-            union_area = new_annot.rectangle.area() + new_hypo.rectangle.area() - intersection_area
+            intersection_area = cbbox_annot.rectangle.intersection_area(cbbox_hypo.rectangle)
+            union_area = cbbox_annot.rectangle.area() + cbbox_hypo.rectangle.area() - intersection_area
             if intersection_area > 0.0:
                 return intersection_area / union_area
             return 0.0
         else:
-            dist = new_annot.rectangle.centroids_distance(new_hypo.rectangle)
+            dist = cbbox_annot.rectangle.centroids_distance(cbbox_hypo.rectangle)
             if dist < ratio:
                 return dist
             else:
-                return dist + 1
-
-    def object_exists(self, match, time, gt):
-        """
-        checks the existence of a CustomBBox at a given time t
-        :param match: CustomBBox to check
-        :param time: instant t
-        :param gt: determine if the match is ground_truth or hypotheses
-        :return boolean: True of False depending if the match exists
-        """
-        if gt:
-            tracks = self.annotations[time]
-        else:
-            tracks = self.hypotheses[time]
-
-        for track in tracks:
-            if match.index == track.index:
-                return True
-        return False
-
-    def find_no_match(self, matches, time, gt):
-        """
-        finds CustomBBoxes that have no matches from annotations or hypotheses
-        :param matches: list(CustomBBox) of current matches
-        :param time: instant t
-        :param gt: determine if the matches are with ground_truth or hypotheses
-        :return not_matches: list(CustomBBox) that are not matched
-        """
-        if gt:
-            tracks = self.annotations[time]
-            objects = matches.keys()
-        else:
-            tracks = self.hypotheses[time]
-            objects = matches.values()
-
-        objects_index = [o.index for o in objects]
-        not_matched = []
-        for track in tracks:
-            if self.object_exists(track, time, gt) and track.index not in objects_index:
-                not_matched.append(track)
-        return not_matched
+                return ratio + 1
 
     @staticmethod
     def find_correspondences(old_match, tracks):
@@ -376,6 +331,8 @@ class MOTMetrics:
         """
         makes a square matrix from a rectangular one, if necessary
         :param matrix: a numpy matrix
+        :param IoU: True if evaluation is done with IoU, False if distance between centroid
+        :param threshold: threshold value for metric (used for padding)
         :return new_mat: a numpy square matrix
         """
         nb_rows = matrix.shape[0]
@@ -408,7 +365,8 @@ class MOTMetrics:
         computes MOTP and MOTA as defined in the article above
         :param first_instant: time t to start evaluating
         :param last_instant: time t to stop evaluating
-        :param overlap_ratio: distance element as an overlap ratio between 2 boxes
+        :param threshold: distance element as an overlap ratio between 2 boxes or distance between centroids
+        :param IoU: True if evaluation is done with IoU, False if distance between centroid
         :return motp, mota: multiple object tracking precision/accuracy
         """
         # counters for different metrics to compute MOTP and MOTA
@@ -419,56 +377,40 @@ class MOTMetrics:
         gt = 0
         distance = 0.0
 
-        # dict(k,v) where k = GT_CustomBBox and v = Hypotheses_CustomBBox
-        matches = {}
-
         # for hungarian algorithm
         munk = Munkres()
 
+        previous_matches = {}
+
         for t in range(first_instant, last_instant + 1):
-            previous_matches = matches.copy()
+            matches = {}
+            annotations = self.annotations[t]
+            hypotheses = self.hypotheses[t]
 
-            not_valid_matches = []
-            for match in matches:
-                # check if current match still exists
-                if self.object_exists(match, t, True) and self.object_exists(matches[match], t, False):
-                    dist = self.distance_between_objects(match, matches[match], t, threshold, IoU)
-                    # we work with bounding boxes
+            # find consistent matches between time t and t-1
+            for pmatch in previous_matches:
+                old_annot = pmatch
+                old_hypo = previous_matches[pmatch]
+                new_annot = MOTMetrics.find_correspondences(old_annot, annotations)
+                new_hypo = MOTMetrics.find_correspondences(old_hypo, hypotheses)
+                if new_annot is not None and new_hypo is not None:
                     if IoU:
-                        if dist >= threshold:
-                            distance += dist
-                        else:
-                            not_valid_matches.append(match)
-                    # we work with distance between centroids
+                        if self.distance_between_objects(new_annot, new_hypo, threshold, IoU) >= threshold:
+                            matches[new_annot] = new_hypo
                     else:
-                        if dist < threshold:
-                            distance += dist
-                        else:
-                            not_valid_matches.append(match)
-                else:
-                    not_valid_matches.append(match)
+                        if self.distance_between_objects(new_annot, new_hypo, threshold, IoU) < threshold:
+                            matches[new_annot] = new_hypo
 
-            # lost matches since last instant
-            for match in not_valid_matches:
-                del matches[match]
+            nb_annotations = len(annotations)
+            nb_hypotheses = len(hypotheses)
 
-            # get gt and hypotheses with no matches
-            gt_not_matched = self.find_no_match(matches, t, True)
-            hypo_not_matched = self.find_no_match(matches, t, False)
-
-            nb_gt = len(matches) + len(gt_not_matched)
-            nb_hypo = len(matches) + len(hypo_not_matched)
-
-            # compute scores between unmatched gt and hypotheses (m x n matrix,
-            # where m = nb of not_matched gt and n = nb of not_matched_hypo)
-            scores = np.zeros(shape=(len(gt_not_matched), len(hypo_not_matched)))
+            scores = np.zeros(shape=(nb_annotations, nb_hypotheses))
             i = 0
-            if len(hypo_not_matched) > 0:
-                for gtnm in gt_not_matched:
+            if nb_hypotheses > 0:
+                for a in annotations:
                     j = 0
-                    for hyponm in hypo_not_matched:
-                        dist = self.distance_between_objects(gtnm, hyponm, t, threshold, IoU)
-                        scores[i, j] = dist
+                    for h in hypotheses:
+                        scores[i, j] = self.distance_between_objects(a, h, threshold, IoU)
                         j += 1
                     i += 1
 
@@ -477,46 +419,52 @@ class MOTMetrics:
             # hungarian algo minimizes assignments => take the complement of each value (1 - val)
             if IoU:
                 costs = np.ones(costs.shape) - costs
-            # add new matches to the current ones
-            if costs is not None and costs.size > 0:
-                associations = munk.compute(costs.copy())
-                for r, c in associations:
+
+            pairings = munk.compute(costs.copy())
+            associations = []
+            # only keep valid pairings (i.e. the ones not padding and respecting the threshold)
+            for r, c in pairings:
+                if r < nb_annotations and c < nb_hypotheses:
+                    dist = self.distance_between_objects(annotations[r], hypotheses[c], threshold, IoU)
                     if IoU:
-                        if 1.0 - costs[r][c] >= threshold:
-                            # ignore the assignments caused by the padding
-                            if r < len(gt_not_matched) and c < len(hypo_not_matched):
-                                matches[gt_not_matched[r]] = hypo_not_matched[c]
-                                distance += scores[r][c]
+                        if dist >= threshold:
+                            associations.append((r, c))
                     else:
-                        if costs[r][c] < threshold:
-                            # ignore the assignments caused by the paddig
-                            if r < len(gt_not_matched) and c < len(hypo_not_matched):
-                                matches[gt_not_matched[r]] = hypo_not_matched[c]
-                                distance += scores[r][c]
+                        if dist < threshold:
+                            associations.append((r, c))
+
+            good_associations = {}
+            for r, c in associations:
+                new_annot = annotations[r]
+                new_hypo = hypotheses[c]
+
+                invalid_matches = []
+                already_exists = False
+                for match in matches:
+                    if new_annot == match and new_hypo == matches[match]:
+                        already_exists = True
+                    elif new_annot == match or new_hypo == matches[match]:
+                        invalid_matches.append(match)
+                        mismatches += 1
+
+                if not already_exists:
+                    good_associations[new_annot] = new_hypo
+
+                for m in invalid_matches:
+                    del matches[m]
+
+            matches.update(good_associations)
+
+            for match in matches:
+                distance += self.distance_between_objects(match, matches[match], threshold, IoU)
 
             # counters update
             correct_tracks += len(matches)
-            false_positives += nb_hypo - len(matches)
-            misses += nb_gt - len(matches)
-            gt += nb_gt
+            false_positives += nb_hypotheses - len(matches)
+            misses += nb_annotations - len(matches)
+            gt += nb_annotations
 
-            # check mismatches between this instant (t) and the last (t-1)
-            bad_matches = []
-            for match in matches:
-                if match in previous_matches:
-                    # for the same gt, 2 different hypotheses
-                    if matches[match] != previous_matches[match]:
-                        bad_matches.append(match)
-                # for the same hypotheses, 2 different gt
-                elif matches[match] in previous_matches.values():
-                    bad_matches.append(matches[match])
-            for prev_match in previous_matches:
-                if prev_match not in matches:
-                    # hypothesis still present, but not gt
-                    if previous_matches[prev_match] in matches.values():
-                        bad_matches.append(previous_matches[prev_match])
-
-            mismatches += len(set(bad_matches))
+            previous_matches = matches.copy()
 
         # metrics calculation
         motp = None
