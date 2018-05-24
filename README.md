@@ -42,7 +42,7 @@ Only some attributes are necessary for each tag:
 * y
 
 ### SQLITE (Polytrack)
-SQLite table named *bounding_boxes* organized as follow:
+SQLite table named "bounding_boxes" organized as follow (all entries in this table):
 
 | object_id | frame_number | x_top_left | y_top_left | x_bottom_right | y_bottom_right |
 | --------- | ------------ | ---------- | ---------- | -------------- | -------------- |
