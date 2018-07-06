@@ -179,7 +179,7 @@ class XMLPetsData(InputData):
                 y_tl = frame.attrib[str(PetsXML.Y)]
                 x_br = frame.attrib[str(PetsXML.WIDTH)] + x_tl
                 y_br = frame.attrib[str(PetsXML.HEIGHT)] + y_tl
-                rectangle = Rectangle(int(x_tl), int(y_tl), int(x_br), int(y_br))
+                rectangle = Rectangle(int(float(x_tl)), int(float(y_tl)), int(float(x_br)), int(float(y_br)))
                 custom_bbox = CustomBBox(obj_id, rectangle)
                 self.tracks[int(frame_number)].append(custom_bbox)
 
@@ -522,6 +522,12 @@ def main():
         data_hypotheses = PolytrackData(file_hypotheses)
     elif annotations_extension == str(Extensions.XML_PETS) and hypotheses_extension == str(Extensions.XML_PETS):
         data_annotations = XMLPetsData(file_annotations)
+        data_hypotheses = XMLPetsData(file_hypotheses)
+    elif annotations_extension == str(Extensions.XML_PETS) and hypotheses_extension == str(Extensions.POLYTRACK):
+        data_annotations = XMLPetsData(file_annotations)
+        data_hypotheses = PolytrackData(file_hypotheses)
+    elif annotations_extension == str(Extensions.POLYTRACK) and hypotheses_extension == str(Extensions.XML_PETS):
+        data_annotations = PolytrackData(file_annotations)
         data_hypotheses = XMLPetsData(file_hypotheses)
     else:
         print('File format not valid (Polytrack (.sqlite) or XML PETS (.xml))')
