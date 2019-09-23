@@ -177,9 +177,10 @@ class XMLPetsData(InputData):
                 frame_number = frame.attrib[str(PetsXML.FRAME_NO)]
                 x_tl = frame.attrib[str(PetsXML.X)]
                 y_tl = frame.attrib[str(PetsXML.Y)]
-                x_br = frame.attrib[str(PetsXML.WIDTH)] + x_tl
-                y_br = frame.attrib[str(PetsXML.HEIGHT)] + y_tl
-                rectangle = Rectangle(int(float(x_tl)), int(float(y_tl)), int(float(x_br)), int(float(y_br)))
+                x_br = frame.attrib[str(PetsXML.WIDTH)]
+                y_br = frame.attrib[str(PetsXML.HEIGHT)]
+                rectangle = Rectangle(int(float(x_tl)), int(float(y_tl)),
+                                      int(float(x_br)) + int(float(x_tl)), int(float(y_br)) + int(float(y_tl)))
                 custom_bbox = CustomBBox(obj_id, rectangle)
                 self.tracks[int(frame_number)].append(custom_bbox)
 
@@ -476,7 +477,7 @@ class MOTMetrics:
         if gt > 0:
             mota = 1.0 - (float(misses + false_positives + mismatches) / gt)
 
-        return motp, mota
+        return motp, mota, false_positives, misses, mismatches
 
 
 def main():
@@ -537,7 +538,7 @@ def main():
     data_hypotheses.convert_annotations()
 
     mot_metrics = MOTMetrics(data_annotations, data_hypotheses)
-    motp, mota = mot_metrics.compute_metrics(data_annotations.min_frame, data_annotations.max_frame, ratio, method)
+    motp, mota, false_positives, misses, mismatches = mot_metrics.compute_metrics(data_annotations.min_frame, data_annotations.max_frame, ratio, method)
 
     if motp is not None:
         print('MOTP = %.4f' % motp)
@@ -547,6 +548,10 @@ def main():
         print('MOTA = %.4f' % mota)
     else:
         print('MOTA = None')
+
+    print('FP = %.4f' % false_positives)
+    print('Misses = %.4f' % misses)
+    print('Mismatches = %.4f' % mismatches)
 
 
 if __name__ == "__main__":
