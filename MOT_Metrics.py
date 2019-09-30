@@ -421,7 +421,11 @@ class MOTMetrics:
             if IoU:
                 costs = np.ones(costs.shape) - costs
 
-            pairings = munk.compute(costs.copy())
+            if nb_annotations == 0 and nb_hypotheses == 0:
+                pairings = []
+            else:
+                pairings = munk.compute(costs.copy())
+
             associations = []
             # only keep valid pairings (i.e. the ones not padding and respecting the threshold)
             for r, c in pairings:
